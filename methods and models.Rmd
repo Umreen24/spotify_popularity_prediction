@@ -1,0 +1,539 @@
+---
+title: Spotify Popularity Data using Bayesian Hierarchical Models
+author: "Israh Imam"
+date: "3/30/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(bayesrules)
+library(tidyverse)
+library(rstanarm)
+library(bayesplot)
+library(tidybayes)
+library(broom.mixed)
+library(forcats)
+
+library(kableExtra)
+library(formattable)
+library(data.table)
+library(plotly)
+library(wordcloud)
+library(tidyselect)
+library(tm)
+library(lubridate)
+
+library(psych)
+library(DAAG)
+library(highcharter)
+library(knitr)
+library(DT)
+library(corrplot)
+library(leaps)
+
+```
+
+# Results & Analysis
+#### Data Exploration
+
+```{r Data Import, include=FALSE}
+
+# Import data
+all_tracks <- read.csv("all_tracks_updated.csv", header = TRUE, sep = ",")
+
+```
+
+```{r Grouping, include=FALSE} 
+
+all_tracks %>% group_by(Genre = genre) %>%
+  summarise(`Track Count` = n()) %>% arrange(desc(`Track Count`)) %>%
+    knitr::kable()
+
+```
+
+```{r Genre Density Plots, echo=FALSE, message=FALSE}
+
+all_tracks <- all_tracks %>% arrange(desc(popularity))
+top_songs <- all_tracks[c(1:200), ]
+
+drop <- "Other"
+all_tracks_wo_other <- top_songs[!(top_songs$genre == drop), ]
+
+songs_data <- names(all_tracks_wo_other)[c(7:14, 16, 18)]
+songs <- all_tracks_wo_other %>% 
+  select(c('genre', songs_data)) %>%
+  pivot_longer(cols = songs_data)
+
+songs %>%
+  ggplot(aes(x = value)) +
+  geom_density(aes(color = genre)) +
+  facet_wrap(~name, ncol = 4, scales = 'free') +
+  labs(title = 'Genres & their Characteristics', x = '', y = '') +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1), axis.text.y = element_blank())
+
+```
+
+
+\hfill\break
+
+```{r Characteristic Correlation, echo=FALSE}
+
+corr_plot <- all_tracks_wo_other %>%
+  select(popularity, acoustic, danceability, energy, instrumentalness, liveness,
+         loudness, speechiness, tempo, key, mode, valence, length_mins)
+
+corrplot(cor(corr_plot),
+         method = 'color',
+         type = 'upper',
+         order = 'hclust')
+
+```
+
+
+```{r Popular Song Features, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Drop unecessary columns
+all_tracks_drop <- all_tracks_wo_other[!duplicated(all_tracks_wo_other$song_title),]
+all_tracks_drop <- all_tracks_wo_other[c(-2, -4, -5, -19, -20)]
+colnames(all_tracks_drop)[1] <- "song_title"
+
+track_features <- names(all_tracks_drop)[c(4:11, 13:14, 15)]
+
+all_tracks <- all_tracks_drop %>% 
+  arrange(desc(popularity)) %>%
+  head(n = 500) %>%
+  pivot_longer(cols = track_features)
+
+all_tracks %>% 
+  ggplot(aes(x = name, y = value)) +
+  geom_jitter(aes(color = genre)) +
+  facet_wrap(~name, ncol = 3, scales = 'free') +
+  labs(title = 'Feature Patterns', x = '', y = '') +
+  theme(axis.text.y = element_blank())
+
+```
+
+\hfill\break
+
+```{r Examining Characteristics, echo=FALSE, message=TRUE, warning=FALSE}
+
+top_songs <-
+  all_tracks_drop %>%
+  select(song_title, artist, genre, popularity, acoustic, danceability, energy,
+         loudness, speechiness, tempo, key, liveness) %>%
+  group_by(artist) %>%
+  arrange(desc(popularity)) %>%
+  head(n = 16)
+
+top_songs <- top_songs[-c(6), ]
+
+acoustic_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -acoustic), x = acoustic, fill = artist, 
+                           shape = genre)) + geom_col()
+acoustic_plot + labs(title = "Acoustic Rating", subtitle = "Top 10 Songs", x = "Acoustic", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+
+```{r}
+
+dance_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -danceability), x = danceability, fill = artist, 
+                           shape = genre)) + geom_col()
+dance_plot + labs(title = "Danceability Rating", subtitle = "Top 10 Songs", x = "Danceability", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+
+```
+
+
+```{r Energy Bar Plot, echo=FALSE}
+
+energy_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -energy), x = energy, fill = artist, 
+                           shape = genre)) + geom_col()
+energy_plot + labs(title = "Energy Rating", subtitle = "Top 10 Songs", x = "Energy", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+
+```{r Loundess Bar Plot, echo=FALSE}
+
+loudness_plot <- ggplot(data = top_songs, aes(y = loudness, x = reorder(song_title, -loudness), fill = artist, 
+                           shape = genre)) + geom_col()
+loudness_plot + labs(title = "Loudness Rating", subtitle = "Top 10 Songs", x = "Song Title", y = "Loudness") + guides(fill = guide_legend(title = "Artist", title.position = "top")) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+```{r Speechiness Bar Plot, echo=FALSE}
+
+speechiness_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -speechiness), x = speechiness, fill = artist, 
+                           shape = genre)) + geom_col()
+speechiness_plot + labs(title = "Speechiness Rating", subtitle = "Top 10 Songs", x = "Speechiness", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+
+```{r Tempo Bar Plot, echo=FALSE}
+
+tempo_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -tempo), x = tempo, fill = artist, 
+                           shape = genre)) + geom_col()
+tempo_plot + labs(title = "Tempo Rating", subtitle = "Top 10 Songs", x = "Tempo", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+```{r Key Bar Plot, echo=FALSE}
+
+key_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -key), x = key, fill = artist, 
+                           shape = genre)) + geom_col() + scale_x_continuous(breaks = seq(0, 11, 1), limits = c(0, 11))
+key_plot + labs(title = "Key", subtitle = "Top 10 Songs", x = "Key", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+```{r}
+
+acoustic_plot <- ggplot(data = top_songs, aes(y = reorder(song_title, -liveness), x = liveness, fill = artist, 
+                           shape = genre)) + geom_col()
+acoustic_plot + labs(title = "Liveness Rating", subtitle = "Top 10 Songs", x = "Liveness", y = "Song Title") + guides(fill = guide_legend(title = "Artist", title.position = "top"))
+
+```
+
+\hfill\break 
+
+# Hierarchical Models
+
+## The Complete Pooled Model
+The assumption for this section is that we have a response variable $Y$, but no predictors $X$. A few variables were selected and artist levels were reordered according to their mean song popularity. The **Artist Means** data frame summarizes the number of songs from each artist and their mean popularity.
+
+\hfill\break 
+
+```{r Load Hierarchical Data}
+
+# Load data
+spotify <- read.csv("all_tracks_updated.csv", header = TRUE, sep = ",",
+                    na.strings = c("", " ", "NA"))
+
+# Drop "Various Artists" 
+drop <- "Various Artists"
+spotify <- spotify[!spotify$artist == drop, ]
+
+# Drop genre "Other"
+drop <- "Other"
+spotify <- spotify[!spotify$artist == drop, ]
+
+# Drop artists where popularity is 0
+drop <- 10
+spotify <- spotify[!spotify$popularity <= drop, ]
+
+
+```
+
+```{r Selecting data to focus, echo=FALSE}
+
+spotify_mutated <- spotify %>% 
+  select(artist, name, popularity) %>%
+  mutate(artist = fct_reorder(artist, popularity, .fun = "mean"))
+
+# Number of songs
+nrow(spotify_mutated)
+
+# Number of artists
+nlevels(spotify_mutated$artist)
+
+```
+
+```{r}
+
+# Group by artist and summarize popularity
+artist_means <- spotify_mutated %>% 
+  group_by(artist) %>%
+  summarize(count = n(), popularity = mean(popularity))
+
+artist_means %>%
+  slice(1:2, 372:373)
+
+```
+
+```{r Density Plot}
+
+# Create density plot of popularity across all songs
+# Variability in popularity from song to song
+ggplot(spotify_mutated, aes(x = popularity)) +
+  geom_density() + 
+  labs(title = "Density Plot Across all Songs", x = "Popularity", y = "Density")
+
+```
+
+### Intercept only model with no predictors
+* By substituting $\beta_0$ for global mean $\mu$, this becomes an intercept-only regression model with no predictors $X$. To create a complete pooled model, **stan_glm()** with the following formula **popularity ~ 1** where **1** means "intercept-only" is used.
+
+```{r Complete Pooled Model, message=FALSE, warning=FALSE}
+
+# Prior intercept "normal" family 
+# location = prior mean (60) & scale defaults to 2.5
+# if autoscale is set to TRUE, scales will be further adjusted and regression 
+# coefficients may be additionally modified internally 
+complete_pooled <- stan_glm(
+  popularity ~ 1,
+  data = spotify_mutated, family = gaussian, 
+  prior_intercept = normal(60, 2.5, autoscale = TRUE),
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000 * 2, seed = 84735
+)
+
+prior_summary(complete_pooled)
+
+```
+
+
+```{r Complete Pooled Summary}
+
+complete_pooled_summary<- tidy(complete_pooled, 
+                            effects = c("fixed", "aux"),
+                       conf.int = TRUE, conf.level = 0.80)
+
+kable(complete_pooled_summary, 
+      caption = "Complete Pooled Summary") %>%
+  kable_styling(bootstrap_options = c("bordered", "striped", "responsive")) %>%
+  column_spec(1, width = "5em")
+
+```
+
+
+```{r}
+
+set.seed(84735)
+predictions_complete_pooled <- posterior_predict(complete_pooled, 
+                                                 newdata = artist_means)
+
+ppc_intervals(artist_means$popularity, 
+              yrep = predictions_complete_pooled,
+              prob_outer = 0.80) +
+  ggplot2::scale_x_continuous(breaks = c(0, 50, 100, 150, 200, 
+                                         250, 300, 350, 400)) +
+  xlab("Level (Artist)") + ylab("Popularity Rating")
+
+```
+
+## The No Pooled Model
+* A no pooled model considers each artist and separately analyzes their popularity. Though there are no predictors, in this section, **artist** will be treated as a predictor. This will limit the understanding to only the artists in this data set, but will help understand this model. A density plot is shown below to begin exploration.
+
+```{r Density Plot by Artist}
+
+ggplot(spotify, aes(x = popularity, group = artist)) +
+  geom_density() + labs(title = "Density Plot of Popularity by Artist")
+
+```
+
+```{r No Pooled Model, message=FALSE, warning=FALSE}
+
+no_pooled_model <- stan_glm(
+  popularity ~ artist - 1,
+  data = spotify, family = gaussian,
+  prior = normal(60, 2.5, autoscale = TRUE),
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 2000 * 2, seed = 84735
+)
+
+
+```
+
+```{r No Pooled Model Posterior Prediction}
+
+set.seed(84735)
+predictions_no_pooled <- posterior_predict(no_pooled_model, 
+                                        newdata = artist_means)
+
+ppc_intervals(artist_means$popularity, yrep = predictions_no_pooled,
+              prob_outer = 0.80) +
+  ggplot2::scale_x_continuous(breaks = c(0, 50, 100, 150, 200, 250, 300,
+                                         350, 400)) +
+  xlab("Level (Artist)") + ylab("Popularity Rating")
+
+
+```
+
+## The Partial Pooled Model 
+
+### The model contains three layers: 
+* Layer 1: how song popularity varies WITHIN artist $j$
+* Layer 2: how popularity $\mu_j$ varies BETWEEN artists
+* Layer 3: prior understanding of the entire Spotify population (global parameters $\mu, \sigma_y, \sigma_{\mu}$)
+
+The **stan_glmer()** function with formula **popularity ~ (1 | artist)** is used to indicate that **artist** is a grouping variable instead of being a predictor of popularity. For the posterior simulation the MCMC (Markov chain Monte Carlo) method will be used. The MCMC method is used to approximate the posterior distribution of a parameter of interest by random sampling in a probabilistic space. 
+
+```{r Partial Pooled Model, message=FALSE, warning=FALSE}
+
+spotify_partial_pooled<- stan_glmer(
+  popularity ~ (1 | artist),
+  data = spotify, family = gaussian,
+  prior_intercept = normal(60, 2.5, autoscale = TRUE),
+  prior_aux = exponential(1, autoscale = TRUE),
+  prior_covariance = decov(reg = 1, conc = 1, shape = 1, scale = 1), 
+  chains = 4, iter = 5000 * 2, seed = 84735
+)
+
+priors <- prior_summary(spotify_partial_pooled)
+priors$prior_aux
+
+```
+
+```{r MCMC, message=FALSE, warning=FALSE, include=FALSE}
+
+mcmc_trace(spotify_partial_pooled)
+mcmc_dens_overlay(spotify_partial_pooled)
+mcmc_acf(spotify_partial_pooled)
+neff_ratio(spotify_partial_pooled)
+rhat(spotify_partial_pooled)
+
+```
+
+```{r PP_Check}
+
+pp_check(spotify_partial_pooled) +
+  xlab("Popularity")
+
+```
+
+```{r PP Data Frame, include=FALSE}
+
+spotify_pp_df <- as.data.frame(spotify_partial_pooled)
+
+spotify_pp_df %>% 
+  colnames() %>% 
+  as.data.frame() %>% 
+  slice(1:3, 373:376)
+
+
+```
+
+### Global parameters analysis
+* The parameters $\mu$, $\sigma_y$, and $\sigma_{\mu}$, also known as the global parameters, are shared by all artists within and beyond this particular sample. The parameters and their meaning within the results of **stan_glmer()** output are listed below:  
+* $\mu$ = intercept
+* $\sigma_y$ = sigma
+* $\sigma_{\mu}^2$ = Sigma[artist:(Intercept), (Intercept)]
+
+A summary of the partial pooled models is shown below. The "fixed" effect term signifies "non-varying" or "global": 
+```{r Tidy Summary}
+
+set.seed(84735)
+tidy(spotify_partial_pooled, effects = "fixed", 
+     conf.int = TRUE, conf.level = 0.80)
+
+```
+
+```{r}
+
+set.seed(84735)
+tidy(spotify_partial_pooled, effects = "ran_pars")
+
+```
+
+The variability in song popularity between artists and differences in popularity of the songs within an artist is calculated: 
+```{r Variability in song popualarity between and within artists}
+
+# Variability of song popularity BETWEEN artists
+8.22^2 / (8.22^2 + 7.57^2) * 100
+
+# Variability of song popularity WITHIN artists
+7.57^2 / (8.22^2 + 7.57^2) * 100
+
+```
+
+From the above calculations, it can be concluded that about **54%** of the variability in song popularity is explained between artists and about **45%** is explained by differences in popularity within an artist. 
+
+```{r Artist Difference Summary}
+
+set.seed(84735)
+artist_difference_summary <- tidy(spotify_partial_pooled, effects = "ran_vals",
+                                  conf.int = TRUE, conf.level = .80)
+
+artist_difference_summary %>% 
+  select(level, conf.low, conf.high) %>%
+  arrange(desc(conf.low)) %>%
+  slice(1:2, 372:373)
+
+```
+
+```{r Artist Chain Summary, message=FALSE, warning=FALSE}
+
+# MCMC chains for each mu_j
+artist_chains <- spotify_partial_pooled %>%
+  spread_draws(`(Intercept)`, b[, artist]) %>%
+  mutate(mu_j = `(Intercept)` + b)
+
+artist_chains %>%
+  select(artist, `(Intercept)`, b, mu_j) %>%
+  head(4)
+
+```
+
+
+```{r Mean Popularity Posterior Summaires, message=FALSE, warning=FALSE}
+
+# Summaries for mu_j
+artist_summary_scaled <- artist_chains %>%
+  select(-`(Intercept)`, -b) %>%
+  mean_qi(.width = 0.80) %>%
+  mutate(artist = fct_reorder(artist, mu_j))
+
+artist_summary_scaled %>%
+  select(artist, mu_j, .lower, .upper) %>%
+  arrange(mu_j) %>%
+  tail(30)
+
+```
+
+
+```{r Artist Summary Scaled Subset}
+
+ggplot(subset(artist_summary_scaled, mu_j >= 78),
+       aes(x = artist, y = mu_j, ymin = .lower, ymax = .upper)) +
+  geom_pointrange() +
+  xaxis_text(angle = 90, hjust = 1)
+
+```
+
+# Posterior Prediction
+
+```{r}
+
+set.seed(84735)
+lipa_chains <- spotify_pp_df %>%
+  rename(b = `b[(Intercept) artist:Dua_Lipa]`) %>%
+  select(`(Intercept)`, b, sigma) %>%
+  mutate(mu_lipa = `(Intercept)` + b,
+         y_lipa = rnorm(20000, mean = mu_lipa, sd = sigma))
+
+lipa_chains %>%
+  mean_qi(y_lipa, .width = 0.80)
+
+artist_summary_scaled %>%
+  filter(artist == "artist:Dua_Lipa")
+
+```
+
+```{r Artist Prediction}
+
+set.seed(84735)
+jay_sean_chains <- spotify_pp_df %>%
+  mutate(sigma_mu = sqrt(`Sigma[artist:(Intercept),(Intercept)]`),
+         mu_sean = rnorm(20000, `(Intercept)`, sigma_mu),
+         y_sean = rnorm(20000, mu_sean, sigma))
+
+jay_sean_chains %>%
+  mean_qi(y_sean, .width = 0.80)
+
+```
+
+```{r Prediction Shortcut, message=FALSE, warning=FALSE}
+
+set.seed(84735)
+prediction_shortcut <- posterior_predict(spotify_partial_pooled,
+                                         newdata = data.frame(artist = c(
+                                           "Dua Lipa", "Jay Sean")))
+
+mcmc_areas(prediction_shortcut, prob = 0.80) +
+  ggplot2::scale_y_discrete(labels = c("Dua Lipa", "Jay Sean"))
+
+
+```
